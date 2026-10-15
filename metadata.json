@@ -1,0 +1,6 @@
+{
+  "name": "Absensi Guru & Staf Tata Usaha",
+  "description": "Aplikasi presensi modern Guru dan Staf Tata Usaha sekolah dengan sistem pengenalan wajah AI dan QR Code terintegrasi Google Sheets secara realtime.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
