@@ -1,5 +1,5 @@
 import { AttendanceRecord, AttendanceSchedule, Person, SheetsConfig } from '../types';
-import { DEFAULT_SHEETS_CONFIG } from './sheetsService';
+import { DEFAULT_SHEETS_CONFIG, saveSheetsConfigToServer, saveScheduleToServer } from './sheetsService';
 import QRCode from 'qrcode';
 
 const STORAGE_KEYS = {
@@ -208,6 +208,10 @@ export function saveSheetsConfig(config: SheetsConfig): void {
   } catch (e) {
     console.error('Failed to save sheets config:', e);
   }
+  // Sync to server so any other device gets this config automatically
+  saveSheetsConfigToServer(config).catch((err) => {
+    console.warn('Failed to sync sheets config to server:', err);
+  });
 }
 
 export function getAttendanceSchedule(): AttendanceSchedule {
@@ -228,6 +232,10 @@ export function saveAttendanceSchedule(schedule: AttendanceSchedule): void {
   } catch (e) {
     console.error('Failed to save schedule:', e);
   }
+  // Sync schedule to server
+  saveScheduleToServer(schedule).catch((err) => {
+    console.warn('Failed to sync schedule to server:', err);
+  });
 }
 
 export function getSoundEnabled(): boolean {

@@ -120,43 +120,79 @@ export const ScriptTemplateTab: React.FC = () => {
         </div>
 
         {/* Structure Preview of Spreadsheet */}
-        <div className="mt-6 pt-5 border-t border-slate-800">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-300 mb-3">
-            <Table className="w-4 h-4 text-emerald-400" />
-            <span>Format Kolom Otomatis yang Dibuat di Google Sheet:</span>
+        <div className="mt-6 pt-5 border-t border-slate-800 space-y-4">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-300 mb-2">
+              <Table className="w-4 h-4 text-emerald-400" />
+              <span>1. Sheet Biodata Pegawai: <code>Data_Guru_TU</code> (Tersimpan otomatis saat Pendaftaran Wajah)</span>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="w-full text-left text-[11px] font-mono text-slate-300">
+                <thead className="bg-[#070d18] text-emerald-400 border-b border-slate-800">
+                  <tr>
+                    <th className="py-2 px-3">A: NIP / NIK</th>
+                    <th className="py-2 px-3">B: Nama Lengkap</th>
+                    <th className="py-2 px-3">C: Kategori</th>
+                    <th className="py-2 px-3">D: Jabatan / Mapel</th>
+                    <th className="py-2 px-3">E: Gender</th>
+                    <th className="py-2 px-3">F: Tanggal Daftar</th>
+                    <th className="py-2 px-3">G: Status Wajah AI</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-[#0c1424] divide-y divide-slate-800">
+                  <tr>
+                    <td className="py-2 px-3 font-mono-numbers">19850412...</td>
+                    <td className="py-2 px-3 font-bold text-white">Drs. H. Ahmad Fauzi, M.Pd</td>
+                    <td className="py-2 px-3 text-emerald-400 font-bold">GURU</td>
+                    <td className="py-2 px-3">Guru Matematika</td>
+                    <td className="py-2 px-3">Laki-Laki</td>
+                    <td className="py-2 px-3 text-slate-400">2026-10-16</td>
+                    <td className="py-2 px-3 text-emerald-300 font-semibold">Wajah AI Aktif</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-slate-800">
-            <table className="w-full text-left text-[11px] font-mono text-slate-300">
-              <thead className="bg-[#070d18] text-emerald-400 border-b border-slate-800">
-                <tr>
-                  <th className="py-2 px-3">A: ID Log</th>
-                  <th className="py-2 px-3">B: Waktu Catat</th>
-                  <th className="py-2 px-3">C: Tanggal</th>
-                  <th className="py-2 px-3">D: NIP</th>
-                  <th className="py-2 px-3">E: Nama Lengkap</th>
-                  <th className="py-2 px-3">F: Kategori</th>
-                  <th className="py-2 px-3">G: Tipe</th>
-                  <th className="py-2 px-3">H: Status</th>
-                  <th className="py-2 px-3">I: Jam Absen</th>
-                  <th className="py-2 px-3">J: Metode</th>
-                </tr>
-              </thead>
-              <tbody className="bg-[#0c1424] divide-y divide-slate-800">
-                <tr>
-                  <td className="py-2 px-3 text-slate-500">rec-1729...</td>
-                  <td className="py-2 px-3">15/10/2026, 06:45:12</td>
-                  <td className="py-2 px-3">2026-10-15</td>
-                  <td className="py-2 px-3">19750812...</td>
-                  <td className="py-2 px-3">Drs. H. Ahmad Fauzi, M.Pd</td>
-                  <td className="py-2 px-3 text-emerald-400 font-bold">GURU</td>
-                  <td className="py-2 px-3">MASUK</td>
-                  <td className="py-2 px-3 text-emerald-400 font-bold">HADIR</td>
-                  <td className="py-2 px-3 font-mono-numbers">06:45:12</td>
-                  <td className="py-2 px-3">WAJAH_AI</td>
-                </tr>
-              </tbody>
-            </table>
+          <div>
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-300 mb-2">
+              <Table className="w-4 h-4 text-sky-400" />
+              <span>2. Sheet Presensi Harian: <code>Log_Presensi</code> (Tersimpan otomatis saat scan kamera)</span>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="w-full text-left text-[11px] font-mono text-slate-300">
+                <thead className="bg-[#070d18] text-sky-400 border-b border-slate-800">
+                  <tr>
+                    <th className="py-2 px-3">A: ID Log</th>
+                    <th className="py-2 px-3">B: Waktu Catat</th>
+                    <th className="py-2 px-3">C: Tanggal</th>
+                    <th className="py-2 px-3">D: NIP</th>
+                    <th className="py-2 px-3">E: Nama Lengkap</th>
+                    <th className="py-2 px-3">F: Kategori</th>
+                    <th className="py-2 px-3">G: Tipe</th>
+                    <th className="py-2 px-3">H: Status</th>
+                    <th className="py-2 px-3">I: Jam Absen</th>
+                    <th className="py-2 px-3">J: Metode</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-[#0c1424] divide-y divide-slate-800">
+                  <tr>
+                    <td className="py-2 px-3 text-slate-500">rec-1729...</td>
+                    <td className="py-2 px-3">16/10/2026, 06:45:12</td>
+                    <td className="py-2 px-3">2026-10-16</td>
+                    <td className="py-2 px-3 font-mono-numbers">19850412...</td>
+                    <td className="py-2 px-3 font-bold text-white">Drs. H. Ahmad Fauzi, M.Pd</td>
+                    <td className="py-2 px-3 text-emerald-400 font-bold">GURU</td>
+                    <td className="py-2 px-3">MASUK</td>
+                    <td className="py-2 px-3 text-emerald-400 font-bold">HADIR</td>
+                    <td className="py-2 px-3 font-mono-numbers">06:45:12</td>
+                    <td className="py-2 px-3">WAJAH_AI</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>

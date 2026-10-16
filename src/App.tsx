@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { CameraMonitor } from './components/CameraMonitor';
 import { AttendanceLog, AttendanceLogFilter } from './components/AttendanceLog';
-import { AttendanceStatsSummary } from './components/AttendanceStatsSummary';
 import { RegistrationTab } from './components/RegistrationTab';
 import { StaffDataTab } from './components/StaffDataTab';
 import { SheetsConfigTab } from './components/SheetsConfigTab';
@@ -33,7 +32,12 @@ import {
   saveSheetsConfig,
   saveSoundEnabled,
 } from './services/storage';
-import { sendAttendanceToSheets } from './services/sheetsService';
+import {
+  sendAttendanceToSheets,
+  sendPersonToSheets,
+  fetchSheetsConfigFromServer,
+  fetchScheduleFromServer,
+} from './services/sheetsService';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'monitor' | 'register' | 'staff' | 'config' | 'script'>('monitor');
@@ -55,9 +59,59 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<{ text: string; isError?: boolean } | null>(null);
   const [dashboardStatusFilter, setDashboardStatusFilter] = useState<AttendanceLogFilter>('ALL');
 
-  // Load initial persons & attendance records
+  // Load initial persons, attendance records, and sync central server config across devices
   useEffect(() => {
     async function loadData() {
+      // 1. Check URL parameters for instant 1-click device link: ?webhook=...&sheetId=...
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlWebhook = urlParams.get('webhook');
+      const urlSheetId = urlParams.get('sheetId');
+      const urlSheetName = urlParams.get('sheetName');
+
+      if (urlWebhook) {
+        const linkedConfig: SheetsConfig = {
+          ...getSheetsConfig(),
+          webhookUrl: decodeURIComponent(urlWebhook),
+          spreadsheetId: urlSheetId ? decodeURIComponent(urlSheetId) : '',
+          sheetName: urlSheetName ? decodeURIComponent(urlSheetName) : 'Log_Presensi',
+          isConnected: true,
+        };
+        saveSheetsConfig(linkedConfig);
+        setSheetsConfig(linkedConfig);
+        showToast('Konfigurasi Google Sheets berhasil diterapkan dari tautan perangkat!');
+        // Clean query parameters from URL without reloading
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else {
+        // 2. Fetch server-side sheets config (shared across all devices)
+        try {
+          const serverConfig = await fetchSheetsConfigFromServer();
+          if (serverConfig && (serverConfig.webhookUrl || serverConfig.spreadsheetId)) {
+            setSheetsConfig((prev) => {
+              const merged = { ...prev, ...serverConfig, isConnected: !!serverConfig.webhookUrl };
+              saveSheetsConfig(merged);
+              return merged;
+            });
+          }
+        } catch (err) {
+          console.warn('Gagal memuat konfigurasi server:', err);
+        }
+      }
+
+      // 3. Fetch server-side schedule (shared across all devices)
+      try {
+        const serverSchedule = await fetchScheduleFromServer();
+        if (serverSchedule) {
+          setSchedule((prev) => {
+            const merged = { ...prev, ...serverSchedule };
+            saveAttendanceSchedule(merged);
+            return merged;
+          });
+        }
+      } catch (err) {
+        console.warn('Gagal memuat jadwal server:', err);
+      }
+
+      // 4. Persons & attendance records
       const p = await getPersons();
       setPersons(p);
       const r = getAttendanceRecords();
@@ -228,7 +282,7 @@ export default function App() {
   };
 
   // Register new Person
-  const handleRegisterPerson = (newPerson: Person) => {
+  const handleRegisterPerson = async (newPerson: Person) => {
     if (currentUser && currentUser.role !== 'admin') {
       showToast('Hanya Administrator yang berwenang mendaftarkan pegawai baru.', true);
       return;
@@ -236,6 +290,19 @@ export default function App() {
     const updated = [newPerson, ...persons];
     setPersons(updated);
     savePersons(updated);
+
+    // Langsung kirim dan simpan ke Google Sheets jika Webhook telah terhubung
+    if (sheetsConfig.webhookUrl) {
+      try {
+        const syncRes = await sendPersonToSheets(newPerson, sheetsConfig);
+        if (syncRes.success) {
+          showToast(`Biodata ${newPerson.nama} berhasil didaftarkan & langsung tersimpan di Google Sheets (Data_Guru_TU)!`);
+          return;
+        }
+      } catch (err) {
+        console.warn('Gagal sinkronisasi data pegawai baru ke Sheets:', err);
+      }
+    }
     showToast(`${newPerson.nama} berhasil didaftarkan!`);
   };
 
@@ -266,6 +333,17 @@ export default function App() {
     saveAttendanceRecords(updatedRecords);
 
     showToast(`Data ${updatedPerson.nama} berhasil diperbarui!`);
+
+    // Perbarui juga data di Google Sheets jika Webhook aktif
+    if (sheetsConfig.webhookUrl) {
+      sendPersonToSheets(updatedPerson, sheetsConfig).then((res) => {
+        if (res.success) {
+          showToast(`Data ${updatedPerson.nama} di Google Sheets berhasil diperbarui!`);
+        }
+      }).catch((err) => {
+        console.warn('Gagal sinkronisasi update pegawai ke Sheets:', err);
+      });
+    }
   };
 
   // Delete Person
@@ -347,17 +425,6 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6">
         {activeTab === 'monitor' && (
           <div className="space-y-5">
-            {/* Attendance Summary Statistics Strip */}
-            <AttendanceStatsSummary
-              records={records}
-              persons={persons}
-              selectedCategory={selectedCategory}
-              activeFilter={dashboardStatusFilter}
-              onFilterByStatus={(filter) => {
-                setDashboardStatusFilter((prev) => (prev === filter ? 'ALL' : (filter as AttendanceLogFilter)));
-              }}
-            />
-
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
               {/* Left Column: Camera Monitor */}
               <div className="lg:col-span-7">
@@ -405,6 +472,7 @@ export default function App() {
             <RegistrationTab
               onRegisterSuccess={handleRegisterPerson}
               onNavigateToMonitor={() => setActiveTab('monitor')}
+              sheetsConfig={sheetsConfig}
             />
           ) : (
             <div className="max-w-lg mx-auto my-12 p-8 rounded-3xl bg-[#0c1424] border border-amber-500/30 text-center shadow-2xl">

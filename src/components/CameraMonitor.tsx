@@ -55,22 +55,35 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
   const [faceDetected, setFaceDetected] = useState<boolean>(false);
   const [faceMatchProgress, setFaceMatchProgress] = useState<number>(0);
   const [showManualFaceSelect, setShowManualFaceSelect] = useState<boolean>(false);
+  const [selectedStaffIndex, setSelectedStaffIndex] = useState<number>(0);
 
-  // Notice when already attended for this type today
-  const [alreadyRecordedNotice, setAlreadyRecordedNotice] = useState<{
+  // Floating HUD above person's head: displays Nama & Jabatan
+  const [headOverlay, setHeadOverlay] = useState<{
     person: Person;
-    tipe: AttendanceType;
-    existingRecord: AttendanceRecord;
-  } | null>(null);
-
-  // Recognition Feedback
-  const [recognizedPerson, setRecognizedPerson] = useState<{
-    person: Person;
-    status: 'HADIR' | 'TERLAMBAT';
-    tipe: AttendanceType;
-    method: AttendanceMethod;
+    statusText: string;
+    isSuccess: boolean;
     time: string;
   } | null>(null);
+
+  // Posisi kotak hijau dinamis yang bergerak mengikuti pergerakan wajah (persentase viewport % dan ukuran px yang pas dengan wajah & tidak terlalu besar)
+  const [targetBoxPos, setTargetBoxPos] = useState<{
+    x: number; // Posisi horizontal tengah dalam persen (0 - 100%)
+    y: number; // Posisi vertikal tengah dalam persen (0 - 100%)
+    width: number;
+    height: number;
+  }>({
+    x: 50,
+    y: 50,
+    width: 125,
+    height: 155,
+  });
+
+  const currentBoxPosRef = useRef<{ x: number; y: number; width: number; height: number }>({
+    x: 50,
+    y: 50,
+    width: 125,
+    height: 155,
+  });
 
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -78,14 +91,28 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const lastProcessedTimeRef = useRef<number>(0);
-  const isCooldownRef = useRef<boolean>(false);
   const faceAlignmentFramesRef = useRef<number>(0);
+
+  // Anti-repetition & Cooldown Management:
+  // Cegah scan berulang-ulang, audio berulang-ulang, dan glitch wajah
+  const scannedCooldownMapRef = useRef<Map<string, number>>(new Map());
+  const lastSpokenMapRef = useRef<Map<string, number>>(new Map());
+  const isProcessingRef = useRef<boolean>(false);
+  const noFaceCountRef = useRef<number>(0);
+  const overlayTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Durasi cooldown pencegah scan berulang (45 detik untuk orang yang sama)
+  const SCAN_COOLDOWN_MS = 45000;
 
   // Stop camera stream cleanly
   const stopCamera = useCallback(() => {
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
+    }
+    if (overlayTimerRef.current) {
+      clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -98,6 +125,10 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
     setIsStartingCamera(false);
     setFaceDetected(false);
     setFaceMatchProgress(0);
+    setHeadOverlay(null);
+    isProcessingRef.current = false;
+    setTargetBoxPos({ x: 50, y: 50, width: 125, height: 155 });
+    currentBoxPosRef.current = { x: 50, y: 50, width: 125, height: 155 };
   }, []);
 
   // Start webcam
@@ -199,10 +230,19 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
   // Process Attendance when a person is identified (via QR or Face)
   const processAttendance = useCallback(
     (person: Person, method: AttendanceMethod) => {
-      if (isCooldownRef.current) return;
-      isCooldownRef.current = true;
-
       const now = new Date();
+      const nowMs = now.getTime();
+      const lastScan = scannedCooldownMapRef.current.get(person.nip) || 0;
+
+      // CEGAH SCAN BERULANG-ULANG:
+      // Jika dalam durasi cooldown (45 detik) untuk orang yang sama, jangan lakukan scan ulang atau audio ulang
+      if (nowMs - lastScan < SCAN_COOLDOWN_MS) {
+        return;
+      }
+
+      // Catat waktu scan untuk orang ini agar tidak terulang
+      scannedCooldownMapRef.current.set(person.nip, nowMs);
+
       const jamAbsen = now.toTimeString().split(' ')[0]; // HH:mm:ss
       const tanggal = now.toISOString().split('T')[0]; // YYYY-MM-DD
 
@@ -212,40 +252,32 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
       );
 
       if (existing) {
-        // Tampilkan notifikasi peringatan bahwa presensi sudah dilakukan
-        setRecognizedPerson(null);
-        setAlreadyRecordedNotice({
+        // Tampilkan nama dan jabatan diatas kepala yang absen dengan status sudah presensi
+        setHeadOverlay({
           person,
-          tipe: currentAttendanceType,
-          existingRecord: existing,
+          statusText: `Sudah Presensi (${existing.jamAbsen})`,
+          isSuccess: false,
+          time: existing.jamAbsen,
         });
 
-        playWarningChime();
-
-        speakIndonesian(
-          `Perhatian ${person.nama}. Anda sudah melakukan presensi ${currentAttendanceType.toLowerCase()} hari ini pada pukul ${existing.jamAbsen}. Presensi masuk dan pulang masing-masing hanya 1 kali per hari.`,
-          soundEnabled
-        );
-
-        // Beri cooldown 4.5 detik agar scanner tidak looping terus menerus
-        setTimeout(() => {
-          setAlreadyRecordedNotice(null);
-          isCooldownRef.current = false;
-          faceAlignmentFramesRef.current = 0;
-          setFaceMatchProgress(0);
-        }, 4500);
-
+        // Suara pengingat hanya diputar maksimal 1x per 60 detik untuk orang yang sama (tidak berulang-ulang)
+        const lastSpoken = lastSpokenMapRef.current.get(person.nip) || 0;
+        if (nowMs - lastSpoken > 60000) {
+          lastSpokenMapRef.current.set(person.nip, nowMs);
+          playWarningChime();
+          speakIndonesian(
+            `${person.nama}. Anda sudah presensi ${currentAttendanceType.toLowerCase()} pukul ${existing.jamAbsen}.`,
+            soundEnabled
+          );
+        }
         return;
       }
 
-      // Jika belum absen untuk tipe ini hari ini, lanjutkan proses presensi
+      // Hitung status Hadir vs Terlambat
       const hours = now.getHours();
       const minutes = now.getMinutes();
-
-      // Determine status (Hadir vs Terlambat for Masuk)
       let status: 'HADIR' | 'TERLAMBAT' = 'HADIR';
       if (currentAttendanceType === 'MASUK') {
-        // Lewat jam 07:15 dianggap terlambat
         if (hours > 7 || (hours === 7 && minutes > 15)) {
           status = 'TERLAMBAT';
         }
@@ -267,17 +299,17 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
         keterangan: status === 'TERLAMBAT' ? 'Terlambat masuk sekolah' : 'Tepat waktu',
       };
 
-      // UI Feedback state
-      setAlreadyRecordedNotice(null);
-      setRecognizedPerson({
+      // Tampilkan nama dan jabatan diatas kepala yang absen
+      setHeadOverlay({
         person,
-        status,
-        tipe: currentAttendanceType,
-        method,
+        statusText: status === 'TERLAMBAT' ? `Terlambat (${jamAbsen})` : `Hadir (${jamAbsen})`,
+        isSuccess: status === 'HADIR',
         time: jamAbsen,
       });
 
-      // Sound and celebration
+      // Suara & konfeti hanya dijalankan 1x saat absen berhasil
+      lastSpokenMapRef.current.set(person.nip, nowMs);
+
       if (status === 'TERLAMBAT') {
         playWarningChime();
       } else {
@@ -285,30 +317,31 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
       }
 
       confetti({
-        particleCount: 50,
-        spread: 60,
-        origin: { y: 0.7 },
+        particleCount: 35,
+        spread: 50,
+        origin: { y: 0.6 },
         colors: ['#10b981', '#34d399', '#38bdf8', '#fbbf24'],
       });
 
       const ucapan =
         currentAttendanceType === 'MASUK'
-          ? `Terima kasih ${person.nama}. Presensi masuk berhasil, status ${status.toLowerCase()}. Selamat bertugas.`
-          : `Terima kasih ${person.nama}. Presensi pulang berhasil. Selamat beristirahat.`;
+          ? `Terima kasih ${person.nama}. Presensi masuk berhasil.`
+          : `Terima kasih ${person.nama}. Presensi pulang berhasil.`;
       speakIndonesian(ucapan, soundEnabled);
 
       onAttendanceSuccess(newRecord);
-
-      // Release cooldown after 4.5 seconds to prevent multiple spam scans
-      setTimeout(() => {
-        setRecognizedPerson(null);
-        isCooldownRef.current = false;
-        faceAlignmentFramesRef.current = 0;
-        setFaceMatchProgress(0);
-      }, 4500);
     },
     [records, currentAttendanceType, soundEnabled, onAttendanceSuccess]
   );
+
+  // Manual reset cooldown jika ingin langsung scan orang berikutnya
+  const handleResetScanCooldown = useCallback(() => {
+    scannedCooldownMapRef.current.clear();
+    lastSpokenMapRef.current.clear();
+    setHeadOverlay(null);
+    faceAlignmentFramesRef.current = 0;
+    setFaceMatchProgress(0);
+  }, []);
 
   // QR Code & Face Presence Detection Loop
   useEffect(() => {
@@ -325,7 +358,7 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
       if (video && canvas && video.readyState === video.HAVE_ENOUGH_DATA) {
         const now = Date.now();
         // Run scan every ~120ms to save CPU while maintaining responsiveness
-        if (now - lastProcessedTimeRef.current > 120 && !isCooldownRef.current) {
+        if (now - lastProcessedTimeRef.current > 120) {
           lastProcessedTimeRef.current = now;
 
           const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -342,6 +375,46 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
               });
 
               if (code && code.data) {
+                // Ikuti posisi QR Code jika terdeteksi
+                if (code.location) {
+                  const pts = [
+                    code.location.topLeftCorner,
+                    code.location.topRightCorner,
+                    code.location.bottomRightCorner,
+                    code.location.bottomLeftCorner,
+                  ];
+                  const avgX = pts.reduce((acc, p) => acc + p.x, 0) / 4;
+                  const avgY = pts.reduce((acc, p) => acc + p.y, 0) / 4;
+
+                  const vW = canvas.width;
+                  const vH = canvas.height;
+                  const cW = video.clientWidth || vW;
+                  const cH = video.clientHeight || vH;
+                  const scale = Math.max(cW / vW, cH / vH);
+                  const renderedW = vW * scale;
+                  const renderedH = vH * scale;
+                  const offsetX = (renderedW - cW) / 2;
+                  const offsetY = (renderedH - cH) / 2;
+
+                  const dispX = facingMode === 'user' ? (vW - avgX) : avgX;
+                  const screenX = dispX * scale - offsetX;
+                  const screenY = avgY * scale - offsetY;
+
+                  const pX = Math.max(20, Math.min(80, (screenX / cW) * 100));
+                  const pY = Math.max(24, Math.min(76, (screenY / cH) * 100));
+
+                  currentBoxPosRef.current.x += (pX - currentBoxPosRef.current.x) * 0.45;
+                  currentBoxPosRef.current.y += (pY - currentBoxPosRef.current.y) * 0.45;
+                  currentBoxPosRef.current.width += (125 - currentBoxPosRef.current.width) * 0.25;
+                  currentBoxPosRef.current.height += (155 - currentBoxPosRef.current.height) * 0.25;
+                  setTargetBoxPos({
+                    x: Math.round(currentBoxPosRef.current.x * 10) / 10,
+                    y: Math.round(currentBoxPosRef.current.y * 10) / 10,
+                    width: Math.round(currentBoxPosRef.current.width),
+                    height: Math.round(currentBoxPosRef.current.height),
+                  });
+                }
+
                 const scannedData = code.data.trim();
                 const foundPerson = persons.find(
                   (p) => p.nip === scannedData || p.id === scannedData || scannedData.includes(p.nip)
@@ -353,55 +426,220 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
               }
             }
 
-            // 2. Optical Face Presence Analysis in the center targeting zone
+            // 2. Optical Face Tracking: Kotak hijau ikut bergerak mengikuti pergerakan wajah (pas & tidak terlalu besar)
             if (detectionMode === 'AUTO' || detectionMode === 'FACE') {
-              // Analyze luminance and contrast in the center box
-              const boxW = Math.floor(canvas.width * 0.4);
-              const boxH = Math.floor(canvas.height * 0.5);
-              const startX = Math.floor((canvas.width - boxW) / 2);
-              const startY = Math.floor((canvas.height - boxH) / 2);
-
               try {
-                const centerData = ctx.getImageData(startX, startY, boxW, boxH);
-                let brightnessSum = 0;
-                let skinTonePixels = 0;
-                const totalPixels = centerData.data.length / 4;
+                const w = canvas.width;
+                const h = canvas.height;
+                const frameImg = ctx.getImageData(0, 0, w, h);
+                const data = frameImg.data;
 
-                // Sample every 4th pixel for speed
-                for (let i = 0; i < centerData.data.length; i += 16) {
-                  const r = centerData.data[i];
-                  const g = centerData.data[i + 1];
-                  const b = centerData.data[i + 2];
-                  brightnessSum += (r + g + b) / 3;
+                // Density grid 16 x 12 untuk melacak klaster inti kepala (menghindari gangguan latar belakang & baju)
+                const gridCols = 16;
+                const gridRows = 12;
+                const cellW = w / gridCols;
+                const cellH = h / gridRows;
+                const grid = new Int32Array(gridCols * gridRows);
 
-                  // Simple human skin hue / luminance heuristic
-                  if (r > 60 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 10) {
-                    skinTonePixels++;
+                const step = 6;
+                for (let y = 0; y < h; y += step) {
+                  const row = Math.floor(y / cellH);
+                  for (let x = 0; x < w; x += step) {
+                    const idx = (y * w + x) * 4;
+                    const r = data[idx];
+                    const g = data[idx + 1];
+                    const b = data[idx + 2];
+
+                    // Klasifikasi warna kulit manusia alami (human skin-tone classifier)
+                    if (
+                      r > 60 &&
+                      g > 40 &&
+                      b > 20 &&
+                      r > g &&
+                      r > b &&
+                      r - g > 12 &&
+                      r - b > 14 &&
+                      r < 248
+                    ) {
+                      const col = Math.floor(x / cellW);
+                      if (row < gridRows && col < gridCols) {
+                        grid[row * gridCols + col]++;
+                      }
+                    }
                   }
                 }
 
-                const sampledCount = totalPixels / 4;
-                const avgBrightness = brightnessSum / sampledCount;
-                const skinRatio = skinTonePixels / sampledCount;
-
-                // Check if a human face/figure is centered in front of the lens
-                if (avgBrightness > 35 && avgBrightness < 240 && skinRatio > 0.12) {
-                  setFaceDetected(true);
-                  faceAlignmentFramesRef.current = Math.min(100, faceAlignmentFramesRef.current + 8);
-                  setFaceMatchProgress(faceAlignmentFramesRef.current);
-
-                  // If user has stayed aligned for ~1.2 seconds, trigger AI face verification
-                  if (faceAlignmentFramesRef.current >= 80 && persons.length > 0 && !isCooldownRef.current) {
-                    // Match with the first or active registered staff, or open quick selector
-                    const targetPerson = persons[0];
-                    if (targetPerson) {
-                      processAttendance(targetPerson, 'WAJAH_AI');
+                // Cari sel dengan konsentrasi kulit tertinggi (area inti wajah/kepala)
+                let maxDensity = 0;
+                let peakCol = -1;
+                let peakRow = -1;
+                for (let r = 0; r < gridRows; r++) {
+                  // Berikan bobot optimal pada zona atas/tengah tempat wajah berada
+                  const rowWeight = r >= 1 && r <= 8 ? 1.3 : 0.6;
+                  for (let c = 1; c < gridCols - 1; c++) {
+                    const density = grid[r * gridCols + c] * rowWeight;
+                    if (density > maxDensity) {
+                      maxDensity = density;
+                      peakCol = c;
+                      peakRow = r;
                     }
                   }
+                }
+
+                // Jika terdeteksi klaster wajah yang jelas
+                if (maxDensity > 10 && peakCol >= 0 && peakRow >= 0) {
+                  const focalX = (peakCol + 0.5) * cellW;
+                  const focalY = (peakRow + 0.5) * cellH;
+
+                  // Lingkupi hanya area wajah di sekitar klaster inti (radius ~22% lebar dan ~25% tinggi)
+                  const maxRadiusX = w * 0.20;
+                  const maxRadiusY = h * 0.24;
+
+                  let sumX = 0;
+                  let sumY = 0;
+                  let skinCount = 0;
+                  let minX = w;
+                  let maxX = 0;
+                  let minY = h;
+                  let maxY = 0;
+
+                  const startY = Math.max(0, Math.floor(focalY - maxRadiusY));
+                  const endY = Math.min(h, Math.ceil(focalY + maxRadiusY));
+                  const startX = Math.max(0, Math.floor(focalX - maxRadiusX));
+                  const endX = Math.min(w, Math.ceil(focalX + maxRadiusX));
+
+                  for (let y = startY; y < endY; y += step) {
+                    for (let x = startX; x < endX; x += step) {
+                      const idx = (y * w + x) * 4;
+                      const r = data[idx];
+                      const g = data[idx + 1];
+                      const b = data[idx + 2];
+
+                      if (
+                        r > 60 &&
+                        g > 40 &&
+                        b > 20 &&
+                        r > g &&
+                        r > b &&
+                        r - g > 12 &&
+                        r - b > 14 &&
+                        r < 248
+                      ) {
+                        sumX += x;
+                        sumY += y;
+                        skinCount++;
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                      }
+                    }
+                  }
+
+                  if (skinCount > 18) {
+                    const rawCenterX = sumX / skinCount;
+                    // Pusatkan sedikit ke atas agar pas tepat di tengah wajah (mata & hidung)
+                    const rawCenterY = (sumY / skinCount) - (maxY - minY) * 0.04;
+
+                    // Proyeksi presisi ke ukuran container dengan memperhitungkan CSS object-cover
+                    const cW = video.clientWidth || w;
+                    const cH = video.clientHeight || h;
+                    const scale = Math.max(cW / w, cH / h);
+                    const renderedW = w * scale;
+                    const renderedH = h * scale;
+                    const offsetX = (renderedW - cW) / 2;
+                    const offsetY = (renderedH - cH) / 2;
+
+                    // Sesuaikan arah cermin (mirror) kamera depan
+                    const visualVideoX = facingMode === 'user' ? (w - rawCenterX) : rawCenterX;
+                    const screenX = visualVideoX * scale - offsetX;
+                    const screenY = rawCenterY * scale - offsetY;
+
+                    const targetPctX = (screenX / cW) * 100;
+                    const targetPctY = (screenY / cH) * 100;
+
+                    // Batasi pergerakan agar kotak dan nama di atas kepala selalu dalam viewport
+                    const clampedPctX = Math.max(20, Math.min(80, targetPctX));
+                    const clampedPctY = Math.max(26, Math.min(74, targetPctY));
+
+                    // Ukuran kotak hijau yang pas dengan wajah dan tidak terlalu besar
+                    // Proporsi kepala/wajah standar (1 : 1.25), lebar ramping dan pas antara 115px - 150px
+                    const detectedFaceW = (maxX - minX) * scale;
+                    const targetW = Math.max(115, Math.min(150, Math.round(detectedFaceW * 1.05 || 125)));
+                    const targetH = Math.max(145, Math.min(188, Math.round(targetW * 1.25)));
+
+                    // Interpolasi LERP yang responsif & lincah mengikuti gerakan kepala secara real-time
+                    currentBoxPosRef.current.x += (clampedPctX - currentBoxPosRef.current.x) * 0.45;
+                    currentBoxPosRef.current.y += (clampedPctY - currentBoxPosRef.current.y) * 0.45;
+                    currentBoxPosRef.current.width += (targetW - currentBoxPosRef.current.width) * 0.3;
+                    currentBoxPosRef.current.height += (targetH - currentBoxPosRef.current.height) * 0.3;
+
+                    setTargetBoxPos({
+                      x: Math.round(currentBoxPosRef.current.x * 10) / 10,
+                      y: Math.round(currentBoxPosRef.current.y * 10) / 10,
+                      width: Math.round(currentBoxPosRef.current.width),
+                      height: Math.round(currentBoxPosRef.current.height),
+                    });
+
+                    noFaceCountRef.current = 0;
+                    setFaceDetected(true);
+                    faceAlignmentFramesRef.current = Math.min(100, faceAlignmentFramesRef.current + 8);
+                    setFaceMatchProgress(faceAlignmentFramesRef.current);
+
+                    // Jika wajah terfokus di bingkai (progress >= 80%)
+                    if (faceAlignmentFramesRef.current >= 80 && persons.length > 0) {
+                      const targetPerson = persons[selectedStaffIndex] || persons[0];
+                      if (targetPerson) {
+                        const lastScanTime = scannedCooldownMapRef.current.get(targetPerson.nip) || 0;
+                        if (Date.now() - lastScanTime >= SCAN_COOLDOWN_MS) {
+                          processAttendance(targetPerson, 'WAJAH_AI');
+                        } else {
+                          const existingToday = records.find(
+                            (r) =>
+                              r.nip === targetPerson.nip &&
+                              r.tanggal === new Date().toISOString().split('T')[0] &&
+                              r.tipe === currentAttendanceType
+                          );
+                          if (existingToday && !headOverlay) {
+                            setHeadOverlay({
+                              person: targetPerson,
+                              statusText: `Sudah Presensi (${existingToday.jamAbsen})`,
+                              isSuccess: false,
+                              time: existingToday.jamAbsen,
+                            });
+                          }
+                        }
+                      }
+                    }
+                  } else {
+                    // Ketika klaster belum cukup kuat, kotak tetap stabil
+                    setFaceDetected(false);
+                    faceAlignmentFramesRef.current = Math.max(0, faceAlignmentFramesRef.current - 3);
+                    setFaceMatchProgress(faceAlignmentFramesRef.current);
+                  }
                 } else {
+                  // Ketika tidak ada wajah terdeteksi, kotak hijau perlahan kembali ke posisi tengah yang kompak & rapi
+                  currentBoxPosRef.current.x += (50 - currentBoxPosRef.current.x) * 0.15;
+                  currentBoxPosRef.current.y += (50 - currentBoxPosRef.current.y) * 0.15;
+                  currentBoxPosRef.current.width += (125 - currentBoxPosRef.current.width) * 0.2;
+                  currentBoxPosRef.current.height += (155 - currentBoxPosRef.current.height) * 0.2;
+
+                  setTargetBoxPos({
+                    x: Math.round(currentBoxPosRef.current.x * 10) / 10,
+                    y: Math.round(currentBoxPosRef.current.y * 10) / 10,
+                    width: Math.round(currentBoxPosRef.current.width),
+                    height: Math.round(currentBoxPosRef.current.height),
+                  });
+
                   setFaceDetected(false);
                   faceAlignmentFramesRef.current = Math.max(0, faceAlignmentFramesRef.current - 4);
                   setFaceMatchProgress(faceAlignmentFramesRef.current);
+
+                  noFaceCountRef.current++;
+                  // Saat orang sudah beranjak / tidak ada wajah selama ~5 detik, bersihkan tampilan nama di atas kepala
+                  if (noFaceCountRef.current > 40) {
+                    setHeadOverlay(null);
+                  }
                 }
               } catch (e) {
                 // Ignore canvas security errors
@@ -422,7 +660,7 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [isCameraActive, detectionMode, persons, processAttendance]);
+  }, [isCameraActive, detectionMode, persons, processAttendance, headOverlay, records, currentAttendanceType, selectedStaffIndex]);
 
   return (
     <div
@@ -581,50 +819,140 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
 
         {/* Active Camera Overlay HUD */}
         {isCameraActive && (
-          <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-6">
-            {/* Center Target Box */}
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            {/* Dynamic Moving Target Box Wrapper - Kotak hijau ikut bergerak mengikuti posisi wajah */}
             <div
-              className={`relative w-56 h-64 sm:w-64 sm:h-72 border-2 rounded-3xl overflow-hidden backdrop-contrast-105 transition-colors duration-300 ${
-                faceDetected
-                  ? 'border-emerald-400 shadow-[0_0_25px_rgba(16,185,129,0.4)]'
-                  : 'border-emerald-500/40'
-              }`}
+              className="absolute pointer-events-none transition-all duration-75 ease-out"
+              style={{
+                left: `${targetBoxPos.x}%`,
+                top: `${targetBoxPos.y}%`,
+                width: `${targetBoxPos.width}px`,
+                height: `${targetBoxPos.height}px`,
+                transform: 'translate(-50%, -50%)',
+              }}
             >
-              {/* Corner Targeting Brackets */}
-              <div className="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-emerald-400 rounded-tl-xl" />
-              <div className="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-emerald-400 rounded-tr-xl" />
-              <div className="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-emerald-400 rounded-bl-xl" />
-              <div className="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-emerald-400 rounded-br-xl" />
-
-              {/* Animated Horizontal Scanline */}
-              <div className="absolute w-full h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_12px_#10b981] animate-scan" />
-
-              {/* Target icon / Face alignment indicator */}
-              <div className="absolute inset-0 flex items-center justify-center text-emerald-400/20">
-                <ScanLine className="w-16 h-16 animate-pulse" />
-              </div>
-
-              {/* Face Match Progress Ring when face detected */}
-              {faceDetected && faceMatchProgress > 0 && (
-                <div className="absolute inset-x-4 bottom-4 pointer-events-auto">
-                  <div className="bg-slate-900/90 backdrop-blur-md rounded-xl p-2 border border-emerald-500/50 shadow-lg text-center">
-                    <div className="flex items-center justify-between text-[10px] text-emerald-300 font-bold mb-1">
-                      <span className="flex items-center gap-1">
-                        <Sparkles className="w-3 h-3 text-emerald-400 animate-spin" />
-                        Mengunci Wajah AI...
-                      </span>
-                      <span>{faceMatchProgress}%</span>
-                    </div>
-                    <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                      <div
-                        className="h-full bg-emerald-400 rounded-full transition-all duration-150"
-                        style={{ width: `${faceMatchProgress}%` }}
+              {/* Floating Name & Jabatan Tag Above Head (Tampil di atas kepala yang absen) */}
+              {headOverlay && (
+                <div className="absolute -top-16 sm:-top-20 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center pointer-events-auto animate-in fade-in zoom-in-95 duration-200 w-auto max-w-[95%]">
+                  <div
+                    className={`px-4 sm:px-5 py-2.5 rounded-2xl border shadow-2xl backdrop-blur-xl flex items-center gap-3 whitespace-nowrap ${
+                      headOverlay.isSuccess
+                        ? 'bg-slate-950/95 border-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.55)] ring-1 ring-emerald-400/40'
+                        : 'bg-slate-950/95 border-amber-400 shadow-[0_0_30px_rgba(245,158,11,0.55)] ring-1 ring-amber-400/40'
+                    }`}
+                  >
+                    <div className="relative shrink-0">
+                      <img
+                        src={headOverlay.person.fotoUrl}
+                        alt={headOverlay.person.nama}
+                        referrerPolicy="no-referrer"
+                        className="w-11 h-11 rounded-xl object-cover border-2 border-emerald-400/80 shadow-sm"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src =
+                            'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80';
+                        }}
                       />
+                      <div
+                        className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center text-[10px] text-slate-950 font-black shadow ${
+                          headOverlay.isSuccess ? 'bg-emerald-400' : 'bg-amber-400'
+                        }`}
+                      >
+                        ✓
+                      </div>
+                    </div>
+                    <div className="text-left">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm sm:text-base font-extrabold text-white tracking-tight drop-shadow-sm">
+                          {headOverlay.person.nama}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                            headOverlay.isSuccess
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                              : 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                          }`}
+                        >
+                          {headOverlay.statusText}
+                        </span>
+                      </div>
+                      <div className="text-xs sm:text-sm text-emerald-300 font-semibold flex items-center gap-1.5 mt-0.5">
+                        <span>{headOverlay.person.jabatan}</span>
+                        <span className="text-slate-500 text-[10px]">•</span>
+                        <span className="text-slate-400 text-xs font-mono">NIP: {headOverlay.person.nip}</span>
+                      </div>
                     </div>
                   </div>
+                  {/* Arrow Indicator pointing down to person's head */}
+                  <div
+                    className={`w-3.5 h-3.5 rotate-45 -mt-2 border-r-2 border-b-2 shadow-lg ${
+                      headOverlay.isSuccess
+                        ? 'bg-slate-950 border-emerald-400'
+                        : 'bg-slate-950 border-amber-400'
+                    }`}
+                  />
                 </div>
               )}
+
+              {/* Dynamic Target Box (Kotak Hijau Pelacak Wajah Dinamis & Ramping) */}
+              <div
+                className={`relative w-full h-full border-2 rounded-2xl overflow-hidden backdrop-contrast-105 transition-colors duration-200 ${
+                  headOverlay
+                    ? 'border-emerald-400 shadow-[0_0_25px_rgba(16,185,129,0.55)]'
+                    : faceDetected
+                    ? 'border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.45)] ring-1 ring-emerald-400/50'
+                    : 'border-emerald-500/40'
+                }`}
+              >
+                {/* Corner Targeting Brackets - Ukuran proporsional kompak */}
+                <div className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-emerald-400 rounded-tl-lg" />
+                <div className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-emerald-400 rounded-tr-lg" />
+                <div className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-emerald-400 rounded-bl-lg" />
+                <div className="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-emerald-400 rounded-br-lg" />
+
+                {/* Animated Horizontal Scanline */}
+                <div className="absolute w-full h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_10px_#10b981] animate-scan" />
+
+                {/* Target icon / Face alignment indicator */}
+                <div className="absolute inset-0 flex items-center justify-center text-emerald-400/20">
+                  <ScanLine className="w-10 h-10 animate-pulse" />
+                </div>
+
+                {/* Face Match Progress Bar - Tampil kompak di bagian bawah kotak */}
+                {faceDetected && !headOverlay && faceMatchProgress > 0 && (
+                  <div className="absolute inset-x-2.5 bottom-2 pointer-events-auto">
+                    <div className="bg-slate-900/90 backdrop-blur-md rounded-lg p-1.5 border border-emerald-500/50 shadow-lg text-center">
+                      <div className="flex items-center justify-between text-[9px] text-emerald-300 font-bold mb-0.5">
+                        <span className="flex items-center gap-1">
+                          <Sparkles className="w-2.5 h-2.5 text-emerald-400 animate-spin" />
+                          Mengunci Wajah...
+                        </span>
+                        <span>{faceMatchProgress}%</span>
+                      </div>
+                      <div className="w-full h-1 rounded-full bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-400 rounded-full transition-all duration-150"
+                          style={{ width: `${faceMatchProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
+
+            {/* Tombol Cepat Scan Pegawai Berikutnya saat overlay aktif */}
+            {headOverlay && (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto z-30 animate-in fade-in duration-200">
+                <button
+                  type="button"
+                  onClick={handleResetScanCooldown}
+                  className="px-4 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-800 border border-slate-700 hover:border-emerald-500/60 text-slate-200 text-xs font-medium flex items-center gap-1.5 backdrop-blur-md transition-all shadow-xl cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Scan Pegawai Berikutnya</span>
+                </button>
+              </div>
+            )}
 
             {/* Status pill on camera feed */}
             <div className="absolute top-4 left-4 flex items-center gap-2 bg-slate-900/85 backdrop-blur-md px-3 py-1.5 rounded-full border border-emerald-500/40 text-emerald-300 text-xs font-medium">
@@ -678,6 +1006,8 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
                 <button
                   key={p.id}
                   onClick={() => {
+                    const idx = persons.findIndex((item) => item.id === p.id);
+                    if (idx !== -1) setSelectedStaffIndex(idx);
                     setShowManualFaceSelect(false);
                     processAttendance(p, 'WAJAH_AI');
                   }}
@@ -778,138 +1108,7 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
           </div>
         )}
 
-        {/* Already Recorded Warning Overlay (Aturan: 1x Masuk & 1x Pulang per hari) */}
-        {alreadyRecordedNotice && (
-          <div className="absolute inset-x-4 bottom-4 sm:inset-x-8 sm:bottom-6 z-20 animate-in fade-in zoom-in-95 duration-200">
-            <div className="bg-slate-900/95 border-2 border-amber-500 rounded-2xl p-4 shadow-[0_0_30px_rgba(245,158,11,0.35)] backdrop-blur-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="relative shrink-0">
-                  <img
-                    src={alreadyRecordedNotice.person.fotoUrl}
-                    alt={alreadyRecordedNotice.person.nama}
-                    referrerPolicy="no-referrer"
-                    className="w-14 h-14 rounded-xl object-cover border-2 border-amber-400 shadow-md"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src =
-                        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80';
-                    }}
-                  />
-                  <div className="absolute -bottom-1 -right-1 p-1 bg-amber-500 text-slate-950 rounded-full shadow">
-                    <AlertTriangle className="w-3.5 h-3.5" />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-300 font-bold flex items-center gap-1">
-                      <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-                      SUDAH PRESENSI {alreadyRecordedNotice.tipe}
-                    </span>
-                    <span className="text-xs text-slate-400 font-mono-numbers">
-                      Pukul {alreadyRecordedNotice.existingRecord.jamAbsen} WIB
-                    </span>
-                  </div>
-                  <h4 className="text-sm sm:text-base font-bold text-white mt-0.5">
-                    {alreadyRecordedNotice.person.nama}
-                  </h4>
-                  <p className="text-xs text-amber-200/90 mt-0.5">
-                    Tercatat status <strong className="text-white">{alreadyRecordedNotice.existingRecord.status}</strong>. Presensi masuk &amp; pulang masing-masing hanya 1x per hari.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
-                {alreadyRecordedNotice.tipe === 'MASUK' ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onChangeAttendanceType('PULANG');
-                      setAlreadyRecordedNotice(null);
-                      isCooldownRef.current = false;
-                    }}
-                    className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition-all shadow-md cursor-pointer flex items-center gap-1"
-                  >
-                    <span>Ganti ke Presensi Pulang</span>
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onChangeAttendanceType('MASUK');
-                      setAlreadyRecordedNotice(null);
-                      isCooldownRef.current = false;
-                    }}
-                    className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition-all shadow-md cursor-pointer flex items-center gap-1"
-                  >
-                    <span>Ganti ke Presensi Masuk</span>
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAlreadyRecordedNotice(null);
-                    isCooldownRef.current = false;
-                  }}
-                  className="px-2.5 py-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white text-xs cursor-pointer border border-slate-700"
-                >
-                  Tutup
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Success Modal / Instant Match Overlay */}
-        {recognizedPerson && (
-          <div className="absolute inset-x-4 bottom-4 sm:inset-x-8 sm:bottom-6 z-20 animate-in fade-in zoom-in-95 duration-200">
-            <div className="bg-slate-900/95 border-2 border-emerald-500 rounded-2xl p-4 shadow-[0_0_30px_rgba(16,185,129,0.3)] backdrop-blur-md flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <img
-                  src={recognizedPerson.person.fotoUrl}
-                  alt={recognizedPerson.person.nama}
-                  referrerPolicy="no-referrer"
-                  className="w-14 h-14 rounded-xl object-cover border-2 border-emerald-400 shadow-md"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src =
-                      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80';
-                  }}
-                />
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold">
-                      TERVERIFIKASI {recognizedPerson.method === 'WAJAH_AI' ? 'WAJAH AI' : 'QR CODE'}
-                    </span>
-                    <span className="text-xs text-slate-400 font-mono-numbers">{recognizedPerson.time}</span>
-                  </div>
-                  <h4 className="text-sm sm:text-base font-bold text-white mt-0.5">
-                    {recognizedPerson.person.nama}
-                  </h4>
-                  <p className="text-xs text-slate-300">
-                    {CATEGORY_LABELS[recognizedPerson.person.kategori] || recognizedPerson.person.kategori} •{' '}
-                    <span className="text-slate-400">{recognizedPerson.person.jabatan}</span>
-                  </p>
-                </div>
-              </div>
-
-              <div className="text-right shrink-0">
-                <div
-                  className={`px-3 py-1 rounded-xl text-xs font-bold inline-block ${
-                    recognizedPerson.status === 'HADIR'
-                      ? 'bg-emerald-500 text-slate-950'
-                      : 'bg-amber-500 text-slate-950'
-                  }`}
-                >
-                  {recognizedPerson.tipe} : {recognizedPerson.status}
-                </div>
-                <div className="text-[10px] text-emerald-400 mt-1 flex items-center justify-end gap-1">
-                  <CheckCircle2 className="w-3 h-3" />
-                  <span>Presensi Berhasil</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Head Overlay displays floating above person's head */}
       </div>
 
       {/* Card Bottom Footer matching screenshot */}

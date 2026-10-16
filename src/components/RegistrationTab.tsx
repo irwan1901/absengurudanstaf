@@ -5,18 +5,24 @@ import {
   Upload,
   CheckCircle2,
   AlertCircle,
+  Cloud,
+  RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
-import { Person, PersonCategory } from '../types';
+import { Person, PersonCategory, SheetsConfig } from '../types';
 import { generateQrDataUrl } from '../services/storage';
+import { sendPersonToSheets } from '../services/sheetsService';
 
 interface RegistrationTabProps {
   onRegisterSuccess: (newPerson: Person) => void;
   onNavigateToMonitor: () => void;
+  sheetsConfig?: SheetsConfig;
 }
 
 export const RegistrationTab: React.FC<RegistrationTabProps> = ({
   onRegisterSuccess,
   onNavigateToMonitor,
+  sheetsConfig,
 }) => {
   const [nip, setNip] = useState('');
   const [nama, setNama] = useState('');
@@ -27,6 +33,7 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
     'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80'
   );
   const [isCapturing, setIsCapturing] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
@@ -109,6 +116,8 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
       return;
     }
 
+    setIsSubmitting(true);
+
     try {
       const qrCodeDataUrl = await generateQrDataUrl(nip.trim());
 
@@ -128,8 +137,33 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
         registeredAt: new Date().toISOString().split('T')[0],
       };
 
+      // 1. Simpan ke database lokal aplikasi
       onRegisterSuccess(newPerson);
-      setSuccessMsg(`Berhasil mendaftarkan ${nama}. Wajah AI dan QR Code telah aktif!`);
+
+      // 2. Kirim langsung ke Google Sheets (Data_Guru_TU) jika webhook dikonfigurasi
+      if (sheetsConfig && sheetsConfig.webhookUrl) {
+        try {
+          const syncRes = await sendPersonToSheets(newPerson, sheetsConfig);
+          if (syncRes.success) {
+            setSuccessMsg(
+              `Berhasil! ${nama} telah didaftarkan dan datanya LANGSUNG MASUK ke Google Sheets (Sheet: Data_Guru_TU)! Wajah AI & QR Code telah aktif.`
+            );
+          } else {
+            setSuccessMsg(
+              `Berhasil mendaftarkan ${nama}. Data tersimpan di perangkat lokal. (${syncRes.message})`
+            );
+          }
+        } catch (syncErr) {
+          console.warn('Gagal sinkronisasi langsung ke Sheets:', syncErr);
+          setSuccessMsg(
+            `Berhasil mendaftarkan ${nama} di perangkat lokal. Terjadi kendala saat mengirim ke Google Sheets.`
+          );
+        }
+      } else {
+        setSuccessMsg(
+          `Berhasil mendaftarkan ${nama}. Wajah AI dan QR Code telah aktif! (Data tersimpan di perangkat lokal. Hubungkan Webhook di menu Konfigurasi Google Sheets untuk otomatisasi cloud).`
+        );
+      }
 
       // Reset fields
       setNip('');
@@ -137,6 +171,8 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
       setJabatan('');
     } catch (err: unknown) {
       setErrorMsg('Gagal memproses pendaftaran: ' + String(err));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -153,10 +189,27 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
               Pendaftaran Wajah &amp; Biodata Guru &amp; Staf TU
             </h2>
             <p className="text-xs text-slate-400">
-              Daftarkan pegawai baru untuk mengaktifkan pengenalan wajah AI otomatis dan membuat kartu QR Code digital.
+              Daftarkan pegawai baru untuk mengaktifkan pengenalan wajah AI otomatis, membuat kartu QR Code digital, dan langsung tersimpan ke Google Sheets.
             </p>
           </div>
         </div>
+
+        {/* Status Sinkronisasi Google Sheets */}
+        {sheetsConfig && sheetsConfig.webhookUrl ? (
+          <div className="mt-3 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs">
+            <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>
+              <strong>Google Sheets Terhubung:</strong> Setiap pendaftaran wajah dan biodata baru akan <strong>langsung dikirim dan tersimpan otomatis ke Google Sheets</strong> (Sheet: <code>Data_Guru_TU</code>).
+            </span>
+          </div>
+        ) : (
+          <div className="mt-3 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              <strong>Pemberitahuan:</strong> Webhook Google Sheets belum diisi di tab <strong>Konfigurasi Google Sheets</strong>. Data baru saat ini akan tersimpan lokal di perangkat ini.
+            </span>
+          </div>
+        )}
 
         {successMsg && (
           <div className="mt-4 p-4 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-emerald-300 text-xs flex items-center justify-between gap-3 animate-in fade-in">
@@ -327,10 +380,24 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
             <div className="pt-2">
               <button
                 type="submit"
-                className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                disabled={isSubmitting}
+                className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
               >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Simpan &amp; Aktifkan Wajah AI Pegawai</span>
+                {isSubmitting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan ke Google Sheets &amp; Mengaktifkan Wajah AI...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>
+                      {sheetsConfig && sheetsConfig.webhookUrl
+                        ? 'Simpan Langsung ke Google Sheets & Aktifkan Wajah AI'
+                        : 'Simpan Pegawai & Aktifkan Wajah AI'}
+                    </span>
+                  </>
+                )}
               </button>
             </div>
           </div>
