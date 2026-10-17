@@ -8,6 +8,7 @@ import {
   Cloud,
   RefreshCw,
   ExternalLink,
+  Trash2,
 } from 'lucide-react';
 import { Person, PersonCategory, SheetsConfig } from '../types';
 import { generateQrDataUrl } from '../services/storage';
@@ -29,9 +30,7 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
   const [kategori, setKategori] = useState<PersonCategory>('GURU');
   const [jabatan, setJabatan] = useState('');
   const [gender, setGender] = useState<'L' | 'P'>('L');
-  const [fotoUrl, setFotoUrl] = useState<string>(
-    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80'
-  );
+  const [fotoUrl, setFotoUrl] = useState<string>('');
   const [isCapturing, setIsCapturing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -124,6 +123,13 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
       // Generate facial descriptor vector
       const faceVector = Array.from({ length: 6 }, () => Number((Math.random() * 2 - 1).toFixed(2)));
 
+      // Jika belum mengambil foto, gunakan avatar siluet netral sesuai inisial nama
+      const finalFotoUrl =
+        fotoUrl.trim() ||
+        `https://ui-avatars.com/api/?name=${encodeURIComponent(
+          nama.trim()
+        )}&background=0f172a&color=10b981&size=256&bold=true`;
+
       const newPerson: Person = {
         id: 'staff-' + Date.now(),
         nip: nip.trim(),
@@ -131,7 +137,7 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
         kategori,
         jabatan: jabatan.trim(),
         gender,
-        fotoUrl,
+        fotoUrl: finalFotoUrl,
         qrCodeDataUrl,
         faceVector,
         registeredAt: new Date().toISOString().split('T')[0],
@@ -169,6 +175,7 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
       setNip('');
       setNama('');
       setJabatan('');
+      setFotoUrl('');
     } catch (err: unknown) {
       setErrorMsg('Gagal memproses pendaftaran: ' + String(err));
     } finally {
@@ -251,46 +258,91 @@ export const RegistrationTab: React.FC<RegistrationTabProps> = ({
                     playsInline
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute inset-x-0 bottom-3 flex justify-center">
+                  <div className="absolute inset-x-0 bottom-3 flex items-center justify-center gap-2">
                     <button
                       type="button"
                       onClick={takeSnapshot}
-                      className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-lg hover:bg-emerald-400"
+                      className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-lg hover:bg-emerald-400 cursor-pointer"
                     >
                       <Camera className="w-4 h-4" />
                       <span>Ambil Jepretan</span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={stopCameraCapture}
+                      className="px-3 py-2 rounded-xl bg-slate-800 text-slate-300 font-medium text-xs shadow-lg hover:bg-slate-700 cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                  </div>
+                </div>
+              ) : fotoUrl ? (
+                <div className="w-full h-full relative group">
+                  <img
+                    src={fotoUrl}
+                    alt="Preview Foto Wajah"
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-slate-950/70 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-3">
+                    <button
+                      type="button"
+                      onClick={startCameraCapture}
+                      className="px-3 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold hover:bg-emerald-400 text-xs flex items-center gap-1.5 cursor-pointer shadow-md"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>Foto Ulang</span>
+                    </button>
+                    <label className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center gap-1.5 cursor-pointer shadow-md">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Ganti File</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleFileUpload}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setFotoUrl('')}
+                      className="p-2 rounded-xl bg-rose-500/80 hover:bg-rose-500 text-white text-xs cursor-pointer shadow-md"
+                      title="Hapus Foto"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               ) : (
-                <img
-                  src={fotoUrl}
-                  alt="Preview"
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
-              )}
-
-              {!isCapturing && (
-                <div className="absolute inset-0 bg-slate-950/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                  <button
-                    type="button"
-                    onClick={startCameraCapture}
-                    className="p-2.5 rounded-xl bg-emerald-500 text-slate-950 font-bold hover:bg-emerald-400 shadow-md text-xs flex items-center gap-1"
-                  >
-                    <Camera className="w-4 h-4" />
-                    <span>Kamera</span>
-                  </button>
-                  <label className="p-2.5 rounded-xl bg-slate-800 text-slate-200 hover:bg-slate-700 shadow-md text-xs flex items-center gap-1 cursor-pointer">
-                    <Upload className="w-4 h-4" />
-                    <span>Upload</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={handleFileUpload}
-                    />
-                  </label>
+                <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
+                  <div className="w-16 h-16 rounded-full bg-slate-800/80 border border-slate-700 flex items-center justify-center text-slate-400 group-hover:border-emerald-500/50 group-hover:text-emerald-400 transition-colors">
+                    <Camera className="w-8 h-8" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-200">Belum Ada Foto Wajah</p>
+                    <p className="text-[11px] text-slate-400 max-w-[210px] mt-0.5">
+                      Ambil foto menggunakan webcam atau upload file foto wajah pegawai
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={startCameraCapture}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-md cursor-pointer transition-all"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>Buka Kamera</span>
+                    </button>
+                    <label className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs flex items-center gap-1.5 cursor-pointer transition-all shadow-sm">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Upload Foto</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleFileUpload}
+                      />
+                    </label>
+                  </div>
                 </div>
               )}
             </div>

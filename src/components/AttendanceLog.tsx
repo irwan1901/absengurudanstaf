@@ -510,7 +510,7 @@ export const AttendanceLog: React.FC<AttendanceLogProps> = ({
                     className="w-10 h-10 rounded-lg object-cover border border-slate-700 shrink-0"
                     onError={(e) => {
                       (e.target as HTMLImageElement).src =
-                        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80';
+                        'https://ui-avatars.com/api/?name=Pegawai&background=0f172a&color=10b981&size=100';
                     }}
                   />
                   <div className="min-w-0">

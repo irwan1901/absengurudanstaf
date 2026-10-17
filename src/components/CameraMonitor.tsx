@@ -849,7 +849,7 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
                         className="w-11 h-11 rounded-xl object-cover border-2 border-emerald-400/80 shadow-sm"
                         onError={(e) => {
                           (e.target as HTMLImageElement).src =
-                            'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80';
+                            'https://ui-avatars.com/api/?name=Pegawai&background=0f172a&color=10b981&size=100';
                         }}
                       />
                       <div
@@ -1024,7 +1024,7 @@ export const CameraMonitor: React.FC<CameraMonitorProps> = ({
                     className="w-9 h-9 rounded-lg object-cover border border-slate-700 shrink-0"
                     onError={(e) => {
                       (e.target as HTMLImageElement).src =
-                        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80';
+                        'https://ui-avatars.com/api/?name=Pegawai&background=0f172a&color=10b981&size=100';
                     }}
                   />
                   <div className="flex-1 min-w-0">
